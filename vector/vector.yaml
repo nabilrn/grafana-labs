@@ -68,7 +68,7 @@ transforms:
           "event_time_valid": valid_time
         }
         if valid_time {
-          .event_timestamp = from_unix_timestamp(epoch)
+          .event_timestamp = from_unix_timestamp!(epoch)
           .ingestion_lag_seconds = received_epoch - epoch
         }
       }
