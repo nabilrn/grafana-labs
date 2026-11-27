@@ -21,9 +21,9 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     cpus: 0.5
+    env_file:
+      - .env
     environment:
-      INGEST_USER: ${INGEST_USER:?Run scripts/init.sh first}
-      INGEST_PASSWORD: ${INGEST_PASSWORD:?Run scripts/init.sh first}
       VECTOR_LOG: info
     volumes:
       - ./vector/vector.yaml:/etc/vector/vector.yaml:ro

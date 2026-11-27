@@ -33,6 +33,13 @@ def post(data, *, authenticated=True, compressed=False, url=receiver):
     except urllib.error.HTTPError as e:
         return e.code
 
+def expect(name, actual, expected):
+    if isinstance(expected, int):
+        expected = (expected,)
+    if actual not in expected:
+        raise RuntimeError(f"{name}: HTTP {actual}; expected {expected}")
+    print(f"PASS: {name} (HTTP {actual})", flush=True)
+
 def query(selector):
     params = urllib.parse.urlencode({"query": selector, "start": started, "end": time.time_ns(), "limit": 1000})
     with urllib.request.urlopen(loki + "/loki/api/v1/query_range?" + params, timeout=10) as r:
@@ -61,18 +68,19 @@ for attempt in range(60):
 else:
     raise RuntimeError("Vector authentication/receiver not ready")
 
-assert post(ndjson({"access_validation": True})) == 200
-assert post(ndjson(event("-denied", "deny", 403), {"offset": "test", "limit": 10, "total": 1})) == 200
-assert post(ndjson(event("-alert", "alert", 403)), compressed=True) == 200
-assert post(b"{not-json}\n") == 200
-assert post(ndjson(event("-unauth", "deny", 403)), authenticated=False) in (401, 403)
-assert post(ndjson(event("-wrongpath", "deny", 403)), url=receiver + "/other") in (404, 405)
+expect("authenticated validation", post(ndjson({"access_validation": True})), 200)
+expect("plain NDJSON and metadata", post(ndjson(event("-denied", "deny", 403), {"offset": "test", "limit": 10, "total": 1})), 200)
+expect("gzip NDJSON", post(ndjson(event("-alert", "alert", 403)), compressed=True), 200)
+expect("malformed JSON sanitized", post(b"{not-json}\n"), 200)
+expect("missing credentials rejected", post(ndjson(event("-unauth", "deny", 403)), authenticated=False), (401, 403))
+expect("wrong path rejected", post(ndjson(event("-wrongpath", "deny", 403)), url=receiver + "/other"), (404, 405))
 
 for attempt in range(60):
     try:
         records = [r for r in query('{source="akamai",dataset="waf"} |= "' + run + '"')]
         diagnostics = query('{source="akamai",dataset="diagnostic"}')
-        if len(records) >= 2 and any(r.get("reason") == "invalid_json" for r in diagnostics):
+        controls = query('{source="akamai",dataset="control"}')
+        if len(records) >= 2 and len(controls) >= 2 and any(r.get("reason") == "invalid_json" for r in diagnostics):
             break
     except (OSError, urllib.error.URLError):
         pass
@@ -85,5 +93,20 @@ assert all(r["status_code"] == 403 for r in records), records
 assert all(r["rule_ids"] == ["950002", "950006"] for r in records), records
 assert all(r["event_time_valid"] and 25 <= r["ingestion_lag_seconds"] <= 120 for r in records), records
 assert all("never-store-raw" not in json.dumps(r) for r in records), records
-assert not query('{source="akamai",dataset="control"}')
+assert len(controls) >= 2 and all(r.get("reason") == "validation_or_batch_metadata" for r in controls), controls
+assert all(r.get("dataset") == "waf" for r in records)
+print("PASS: control records are isolated from WAF statistics", flush=True)
 print("PASS: auth, exact path, validation, NDJSON, gzip, normalization, rule decoding, diagnostics and Loki query")
+
+# Execute every dashboard metric expression against Loki, not just JSON syntax.
+dashboard = json.loads((root / "grafana/akamai-waf.json").read_text())
+for panel in dashboard["panels"]:
+    for target in panel.get("targets", []):
+        if panel["type"] == "logs":
+            continue
+        expr = target["expr"].replace("$__range", "15m")
+        params = urllib.parse.urlencode({"query": expr, "time": time.time_ns()})
+        with urllib.request.urlopen(loki + "/loki/api/v1/query?" + params, timeout=20) as r:
+            assert json.load(r)["status"] == "success", panel["title"]
+        print("PASS: LogQL " + panel["title"], flush=True)
+

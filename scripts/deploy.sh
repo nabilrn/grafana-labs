@@ -1,19 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+engine="${CONTAINER_ENGINE:-podman}"
 bash scripts/init.sh
-podman compose -f compose.yaml config --quiet
-podman compose -f compose.yaml pull
-podman compose -f compose.yaml run --rm --no-deps vector validate --no-environment /etc/vector/vector.yaml
-podman compose -f compose.yaml up -d
-echo 'Waiting for Loki readiness...'
-for i in $(seq 1 90); do
-  if curl -fsS http://127.0.0.1:13100/ready >/dev/null 2>&1; then
-    python3 scripts/smoke.py
-    echo 'Local smoke test passed. Existing Grafana and Caddy were not modified.'
-    exit 0
+"$engine" compose -f compose.yaml config --quiet
+"$engine" compose -f compose.yaml pull
+"$engine" compose -f compose.yaml run --rm --no-deps vector validate --no-environment /etc/vector/vector.yaml
+"$engine" compose -f compose.yaml up -d
+if "$engine" inspect dg-grafana >/dev/null 2>&1; then
+  if ! "$engine" inspect dg-grafana --format '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' | grep -qx dg-monitoring; then
+    "$engine" network connect dg-monitoring dg-grafana
   fi
-  sleep 2
-done
-echo 'Loki did not become ready; inspect podman logs dg-loki.' >&2
-exit 1
+fi
+bash scripts/check.sh
+echo 'Deployment verified. Existing Grafana container and Caddy configuration were not replaced.'
