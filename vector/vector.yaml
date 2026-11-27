@@ -8,9 +8,12 @@ sources:
     method: POST
     response_code: 200
     auth:
-      strategy: basic
-      username: "${INGEST_USER}"
-      password: "${INGEST_PASSWORD}"
+      strategy: custom
+      source: |-
+        user = get_env_var("INGEST_USER") ?? ""
+        password = get_env_var("INGEST_PASSWORD") ?? ""
+        expected = "Basic " + encode_base64(user + ":" + password)
+        user != "" && password != "" && (to_string(.headers.authorization) ?? "") == expected
     framing:
       method: newline_delimited
       newline_delimited:
