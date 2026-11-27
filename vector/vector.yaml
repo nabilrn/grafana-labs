@@ -29,7 +29,7 @@ transforms:
       if err != null || !is_object(payload) {
         . = {"timestamp": received, "dataset": "diagnostic", "reason": "invalid_json", "action": "unknown"}
       } else if payload.access_validation == true || (exists(payload.offset) && exists(payload.total) && !exists(payload.attackData)) {
-        . = {"timestamp": received, "dataset": "control", "action": "unknown"}
+        . = {"timestamp": received, "dataset": "control", "reason": "validation_or_batch_metadata", "action": "unknown"}
       } else if payload.type != "akamai_siem" || !is_object(payload.attackData) || !is_object(payload.httpMessage) {
         . = {"timestamp": received, "dataset": "diagnostic", "reason": "unexpected_schema", "action": "unknown"}
       } else {
@@ -72,15 +72,11 @@ transforms:
           .ingestion_lag_seconds = received_epoch - epoch
         }
       }
-  exclude_control:
-    type: filter
-    inputs: [normalize]
-    condition: '.dataset != "control"'
 
 sinks:
   loki:
     type: loki
-    inputs: [exclude_control]
+    inputs: [normalize]
     endpoint: http://dg-loki:3100
     labels:
       source: akamai
