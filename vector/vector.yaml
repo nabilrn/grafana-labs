@@ -1,0 +1,108 @@
+data_dir: /var/lib/vector
+sources:
+  datastream:
+    type: http_server
+    address: 0.0.0.0:8686
+    path: /akamai/waf
+    strict_path: true
+    method: POST
+    response_code: 200
+    auth:
+      strategy: basic
+      username: "${INGEST_USER}"
+      password: "${INGEST_PASSWORD}"
+    framing:
+      method: newline_delimited
+      newline_delimited:
+        max_length: 262144
+    decoding:
+      codec: bytes
+
+transforms:
+  normalize:
+    type: remap
+    inputs: [datastream]
+    drop_on_error: true
+    source: |-
+      received = now()
+      payload, err = parse_json(.message)
+      if err != null || !is_object(payload) {
+        . = {"timestamp": received, "dataset": "diagnostic", "reason": "invalid_json", "action": "unknown"}
+      } else if payload.access_validation == true || (exists(payload.offset) && exists(payload.total) && !exists(payload.attackData)) {
+        . = {"timestamp": received, "dataset": "control", "action": "unknown"}
+      } else if payload.type != "akamai_siem" || !is_object(payload.attackData) || !is_object(payload.httpMessage) {
+        . = {"timestamp": received, "dataset": "diagnostic", "reason": "unexpected_schema", "action": "unknown"}
+      } else {
+        action = downcase(to_string(payload.attackData.appliedAction) ?? "")
+        if !includes(["deny", "alert", "allow", "monitor", "block", "redirect", "challenge"], action) {
+          action = "unknown"
+        }
+        epoch = to_int(payload.httpMessage.start) ?? 0
+        received_epoch = to_unix_timestamp(received)
+        valid_time = epoch > 0 && epoch <= received_epoch + 300
+        ids = []
+        encoded = decode_percent(to_string(payload.attackData.rules) ?? "")
+        for_each(split(encoded, ";")) -> |_i, part| {
+          if part != "" {
+            decoded, decode_err = decode_base64(part)
+            if decode_err == null {
+              ids = push(ids, decoded)
+            }
+          }
+        }
+        . = {
+          "timestamp": received,
+          "dataset": "waf",
+          "action": action,
+          "hostname": to_string(payload.httpMessage.host) ?? "",
+          "method": to_string(payload.httpMessage.method) ?? "",
+          "status_code": to_int(payload.httpMessage.status) ?? 0,
+          "request_id": to_string(payload.httpMessage.requestId) ?? "",
+          "source_ip": to_string(payload.attackData.clientIP) ?? "",
+          "country": upcase(to_string(payload.geo.country) ?? ""),
+          "asn": to_string(payload.geo.asn) ?? "",
+          "policy_id": to_string(payload.attackData.policyId) ?? "",
+          "rule_ids": ids,
+          "bot_score": to_int(payload.botData.botScore) ?? 0,
+          "event_epoch": epoch,
+          "event_time_valid": valid_time
+        }
+        if valid_time {
+          .event_timestamp = from_unix_timestamp(epoch)
+          .ingestion_lag_seconds = received_epoch - epoch
+        }
+      }
+  exclude_control:
+    type: filter
+    inputs: [normalize]
+    condition: '.dataset != "control"'
+
+sinks:
+  loki:
+    type: loki
+    inputs: [exclude_control]
+    endpoint: http://dg-loki:3100
+    labels:
+      source: akamai
+      dataset: "{{ dataset }}"
+      action: "{{ action }}"
+    encoding:
+      codec: json
+    remove_timestamp: false
+    remove_label_fields: false
+    out_of_order_action: accept
+    compression: snappy
+    batch:
+      max_bytes: 262144
+      timeout_secs: 1
+    request:
+      concurrency: 1
+      timeout_secs: 10
+    buffer:
+      type: disk
+      max_size: 536870912
+      when_full: block
+    acknowledgements:
+      enabled: true
+    healthcheck:
+      enabled: false

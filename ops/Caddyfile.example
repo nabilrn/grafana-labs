@@ -1,0 +1,18 @@
+# EXAMPLE ONLY: merge into the existing managed routing mechanism manually.
+# Do NOT reload the entire MyPaaS Caddyfile or expose Loki.
+# Enable this route only after authorization and a dedicated access policy.
+http://dg-ingest.example.test {
+    @ingest {
+        method POST
+        path /akamai/waf
+    }
+    handle @ingest {
+        request_body {
+            max_size 2MB
+        }
+        reverse_proxy dg-vector:8686
+    }
+    handle {
+        respond 404
+    }
+}

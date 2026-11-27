@@ -1,0 +1,46 @@
+name: dg-monitoring
+services:
+  loki:
+    image: docker.io/grafana/loki:3.7.10
+    container_name: dg-loki
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    restart: unless-stopped
+    mem_limit: 1024m
+    cpus: 1.0
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "127.0.0.1:13100:3100"
+    networks:
+      - monitoring
+  vector:
+    image: docker.io/timberio/vector:0.62.0-debian
+    container_name: dg-vector
+    command: ["--config", "/etc/vector/vector.yaml"]
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    environment:
+      INGEST_USER: ${INGEST_USER:?Run scripts/init.sh first}
+      INGEST_PASSWORD: ${INGEST_PASSWORD:?Run scripts/init.sh first}
+      VECTOR_LOG: info
+    volumes:
+      - ./vector/vector.yaml:/etc/vector/vector.yaml:ro
+      - vector-data:/var/lib/vector
+    ports:
+      - "127.0.0.1:18686:8686"
+    networks:
+      - monitoring
+    depends_on:
+      - loki
+    stop_grace_period: 30s
+networks:
+  monitoring:
+    name: dg-monitoring
+    driver: bridge
+volumes:
+  loki-data:
+    name: dg-loki-data
+  vector-data:
+    name: dg-vector-data

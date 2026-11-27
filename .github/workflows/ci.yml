@@ -1,0 +1,41 @@
+name: Monitoring integration
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate ephemeral credentials
+        run: bash scripts/init.sh
+      - name: Validate Compose, dashboard JSON and scripts
+        run: |
+          docker compose config --quiet
+          bash -n scripts/init.sh scripts/deploy.sh
+          python3 -m py_compile scripts/smoke.py
+          python3 -m json.tool grafana/akamai-waf.json >/dev/null
+      - name: Pull pinned images
+        run: docker compose pull
+      - name: Validate Vector config
+        run: docker compose run --rm --no-deps vector validate --no-environment /etc/vector/vector.yaml
+      - name: Launch and verify Loki readiness
+        run: |
+          docker compose up -d
+          for i in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:13100/ready >/dev/null 2>&1; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+      - name: Integration test
+        run: python3 scripts/smoke.py
+      - name: Diagnostics on failure
+        if: failure()
+        run: docker compose ps; docker compose logs --tail=100
+      - name: Remove CI containers and disposable volumes
+        if: always()
+        run: docker compose down -v
